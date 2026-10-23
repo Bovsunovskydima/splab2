@@ -1,0 +1,9 @@
+perf.data
+perf.data.old
+*.data
+*.perf
+lab_O0
+lab_O3
+lab_O3fm
+*.exe
+*.o

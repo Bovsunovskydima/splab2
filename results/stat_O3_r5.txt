@@ -1,0 +1,14 @@
+
+ Performance counter stats for './lab_O3' (5 runs):
+
+            474.43 msec task-clock                #    0.976 CPUs utilized            ( +-  0.84% )
+                 1      context-switches          #    2.086 /sec                     ( +- 92.74% )
+                 0      cpu-migrations            #    0.000 /sec                   
+              8086      page-faults               #   16.864 K/sec                    ( +-  0.00% )
+   <not supported>      cycles                                                      
+   <not supported>      instructions                                                
+   <not supported>      branches                                                    
+   <not supported>      branch-misses                                               
+
+           0.48605 +- 0.00405 seconds time elapsed  ( +-  0.83% )
+

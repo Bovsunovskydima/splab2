@@ -1,0 +1,14 @@
+
+ Performance counter stats for './lab_O0' (5 runs):
+
+           4669.06 msec task-clock                #    0.988 CPUs utilized            ( +-  0.81% )
+                16      context-switches          #    3.375 /sec                     ( +-  8.48% )
+                 0      cpu-migrations            #    0.000 /sec                   
+              8086      page-faults               #    1.706 K/sec                    ( +-  0.00% )
+   <not supported>      cycles                                                      
+   <not supported>      instructions                                                
+   <not supported>      branches                                                    
+   <not supported>      branch-misses                                               
+
+            4.7277 +- 0.0326 seconds time elapsed  ( +-  0.69% )
+

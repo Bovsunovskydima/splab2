@@ -1,0 +1,1226 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="502" onload="init(evt)" viewBox="0 0 1200 502" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+		if (currentSearchTerm === null) return;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="502.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Differential: O0 -> O3</text>
+<text id="details" x="10.00" y="485" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="485" > </text>
+<g id="frames">
+<g >
+<title>std::swap&lt;float&gt; (5,005,005 samples, 1.00%; +0.80%)</title><rect x="845.4" y="165" width="11.8" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="848.44" y="175.5" ></text>
+</g>
+<g >
+<title>std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (269,269,269 samples, 53.80%; 0.00%)</title><rect x="486.7" y="293" width="634.9" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="489.72" y="303.5" >std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allo..</text>
+</g>
+<g >
+<title>std::__uninitialized_default_n_1&lt;true&gt;::__uninit_default_n&lt;float*, unsigned long&gt; (12,012,012 samples, 2.40%; 0.00%)</title><rect x="1159.3" y="277" width="28.3" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1162.32" y="287.5" >s..</text>
+</g>
+<g >
+<title>lab (500,500,500 samples, 100.00%; 0.00%)</title><rect x="10.0" y="437" width="1180.0" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="13.00" y="447.5" >lab</text>
+</g>
+<g >
+<title>randomize (13,013,013 samples, 2.60%; -1.80%)</title><rect x="257.8" y="357" width="30.7" height="15.0" fill="rgb(208,208,255)" rx="2" ry="2" />
+<text  x="260.80" y="367.5" >ra..</text>
+</g>
+<g >
+<title>std::__unguarded_partition_pivot&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (11,011,011 samples, 2.20%; -0.20%)</title><rect x="541.0" y="117" width="26.0" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="544.00" y="127.5" >s..</text>
+</g>
+<g >
+<title>std::__unguarded_partition_pivot&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (21,021,021 samples, 4.20%; 0.00%)</title><rect x="706.2" y="181" width="49.6" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="709.20" y="191.5" >std::..</text>
+</g>
+<g >
+<title>__folio_batch_add_and_move (2,002,002 samples, 0.40%; 0.00%)</title><rect x="1173.5" y="69" width="4.7" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1176.48" y="79.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_hyperv_stimer0 (2,002,002 samples, 0.40%; 0.00%)</title><rect x="354.6" y="341" width="4.7" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="357.56" y="351.5" ></text>
+</g>
+<g >
+<title>std::__unguarded_partition&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (23,023,023 samples, 4.60%; -0.40%)</title><rect x="755.8" y="181" width="54.2" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="758.76" y="191.5" >std::..</text>
+</g>
+<g >
+<title>std::__unguarded_partition_pivot&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (9,009,009 samples, 1.80%; 0.00%)</title><rect x="519.8" y="101" width="21.2" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="522.76" y="111.5" >s..</text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator-- (2,002,002 samples, 0.40%; -0.60%)</title><rect x="1142.8" y="261" width="4.7" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="1145.80" y="271.5" ></text>
+</g>
+<g >
+<title>std::swap&lt;float&gt; (3,003,003 samples, 0.60%; +0.40%)</title><rect x="602.4" y="85" width="7.0" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="605.36" y="95.5" ></text>
+</g>
+<g >
+<title>std::__unguarded_partition&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (20,020,020 samples, 4.00%; -0.20%)</title><rect x="810.0" y="197" width="47.2" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="813.04" y="207.5" >std:..</text>
+</g>
+<g >
+<title>alloc_pages_mpol (4,004,004 samples, 0.80%; 0.00%)</title><rect x="1178.2" y="69" width="9.4" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1181.20" y="79.5" ></text>
+</g>
+<g >
+<title>std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (137,137,137 samples, 27.40%; 0.00%)</title><rect x="486.7" y="213" width="323.3" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="489.72" y="223.5" >std::__introsort_loop&lt;__gnu_cxx::__normal_i..</text>
+</g>
+<g >
+<title>__gnu_cxx::__ops::_Iter_less_iter::operator (2,002,002 samples, 0.40%; -4.80%)</title><rect x="642.5" y="117" width="4.7" height="15.0" fill="rgb(206,206,255)" rx="2" ry="2" />
+<text  x="645.48" y="127.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator-- (12,012,012 samples, 2.40%; +0.40%)</title><rect x="956.4" y="213" width="28.3" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="959.36" y="223.5" >_..</text>
+</g>
+<g >
+<title>std::fill_n&lt;float*, unsigned long, float&gt; (12,012,012 samples, 2.40%; 0.00%)</title><rect x="1159.3" y="261" width="28.3" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1162.32" y="271.5" >s..</text>
+</g>
+<g >
+<title>sysvec_hyperv_stimer0 (2,002,002 samples, 0.40%; 0.00%)</title><rect x="354.6" y="325" width="4.7" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="357.56" y="335.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator++ (4,004,004 samples, 0.80%; -0.20%)</title><rect x="1024.8" y="229" width="9.4" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="1027.80" y="239.5" ></text>
+</g>
+<g >
+<title>std::__fill_n_a&lt;float*, unsigned long, float&gt; (12,012,012 samples, 2.40%; 0.00%)</title><rect x="1159.3" y="245" width="28.3" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1162.32" y="255.5" >s..</text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator++ (1,001,001 samples, 0.20%; 0.00%)</title><rect x="508.0" y="53" width="2.3" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="510.96" y="63.5" ></text>
+</g>
+<g >
+<title>std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (20,020,020 samples, 4.00%; 0.00%)</title><rect x="493.8" y="117" width="47.2" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="496.80" y="127.5" >std:..</text>
+</g>
+<g >
+<title>__gnu_cxx::__ops::_Iter_less_iter::operator (2,002,002 samples, 0.40%; -1.20%)</title><rect x="557.5" y="85" width="4.7" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="560.52" y="95.5" ></text>
+</g>
+<g >
+<title>std::__move_median_to_first&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (1,001,001 samples, 0.20%; +0.20%)</title><rect x="505.6" y="69" width="2.4" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="508.60" y="79.5" ></text>
+</g>
+<g >
+<title>__libc_start_main (500,500,500 samples, 100.00%; 0.00%)</title><rect x="10.0" y="405" width="1180.0" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="13.00" y="415.5" >__libc_start_main</text>
+</g>
+<g >
+<title>std::swap&lt;float&gt; (3,003,003 samples, 0.60%; +0.40%)</title><rect x="998.8" y="197" width="7.1" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="1001.84" y="207.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (12,012,012 samples, 2.40%; 0.00%)</title><rect x="1159.3" y="197" width="28.3" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1162.32" y="207.5" >[..</text>
+</g>
+<g >
+<title>charge_memcg (1,001,001 samples, 0.20%; 0.00%)</title><rect x="1171.1" y="69" width="2.4" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1174.12" y="79.5" ></text>
+</g>
+<g >
+<title>std::__unguarded_partition&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (2,002,002 samples, 0.40%; +0.20%)</title><rect x="498.5" y="53" width="4.7" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="501.52" y="63.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator++ (1,001,001 samples, 0.20%; -2.00%)</title><rect x="1074.4" y="245" width="2.3" height="15.0" fill="rgb(208,208,255)" rx="2" ry="2" />
+<text  x="1077.36" y="255.5" ></text>
+</g>
+<g >
+<title>std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (220,220,220 samples, 44.00%; 0.00%)</title><rect x="486.7" y="261" width="519.2" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="489.72" y="271.5" >std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;..</text>
+</g>
+<g >
+<title>vma_alloc_folio_noprof (4,004,004 samples, 0.80%; 0.00%)</title><rect x="1178.2" y="85" width="9.4" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1181.20" y="95.5" ></text>
+</g>
+<g >
+<title>std::__unguarded_partition_pivot&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (23,023,023 samples, 4.60%; 0.00%)</title><rect x="651.9" y="165" width="54.3" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="654.92" y="175.5" >std::..</text>
+</g>
+<g >
+<title>std::sort&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt; &gt; (324,324,324 samples, 64.80%; 0.00%)</title><rect x="394.7" y="341" width="764.6" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="397.68" y="351.5" >std::sort&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt; &gt;</text>
+</g>
+<g >
+<title>std::iter_swap&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt; &gt; (3,003,003 samples, 0.60%; -0.20%)</title><rect x="748.7" y="149" width="7.1" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="751.68" y="159.5" ></text>
+</g>
+<g >
+<title>std::__unguarded_partition_pivot&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (2,002,002 samples, 0.40%; 0.00%)</title><rect x="498.5" y="69" width="4.7" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="501.52" y="79.5" ></text>
+</g>
+<g >
+<title>_start (500,500,500 samples, 100.00%; 0.00%)</title><rect x="10.0" y="421" width="1180.0" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="13.00" y="431.5" >_start</text>
+</g>
+<g >
+<title>folio_add_lru_vma (2,002,002 samples, 0.40%; 0.00%)</title><rect x="1173.5" y="85" width="4.7" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1176.48" y="95.5" ></text>
+</g>
+<g >
+<title>std::swap&lt;float&gt; (1,001,001 samples, 0.20%; +0.20%)</title><rect x="1157.0" y="245" width="2.3" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="1159.96" y="255.5" ></text>
+</g>
+<g >
+<title>std::__unguarded_partition&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (32,032,032 samples, 6.40%; -1.40%)</title><rect x="1046.0" y="261" width="75.6" height="15.0" fill="rgb(208,208,255)" rx="2" ry="2" />
+<text  x="1049.04" y="271.5" >std::__u..</text>
+</g>
+<g >
+<title>std::vector&lt;float, std::allocator&lt;float&gt; &gt;::_M_default_initialize (12,012,012 samples, 2.40%; 0.00%)</title><rect x="1159.3" y="341" width="28.3" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1162.32" y="351.5" >s..</text>
+</g>
+<g >
+<title>std::vector&lt;float, std::allocator&lt;float&gt; &gt;::size (15,015,015 samples, 3.00%; -15.20%)</title><rect x="359.3" y="341" width="35.4" height="15.0" fill="rgb(198,198,255)" rx="2" ry="2" />
+<text  x="362.28" y="351.5" >std..</text>
+</g>
+<g >
+<title>[libc.so.6] (500,500,500 samples, 100.00%; 0.00%)</title><rect x="10.0" y="389" width="1180.0" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="13.00" y="399.5" >[libc.so.6]</text>
+</g>
+<g >
+<title>std::__unguarded_insertion_sort&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (39,039,039 samples, 7.80%; +0.40%)</title><rect x="394.7" y="293" width="92.0" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="397.68" y="303.5" >std::__ung..</text>
+</g>
+<g >
+<title>std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (4,004,004 samples, 0.80%; 0.00%)</title><rect x="493.8" y="85" width="9.4" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="496.80" y="95.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator++ (2,002,002 samples, 0.40%; -1.00%)</title><rect x="663.7" y="133" width="4.7" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="666.72" y="143.5" ></text>
+</g>
+<g >
+<title>std::iter_swap&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt; &gt; (4,004,004 samples, 0.80%; -0.80%)</title><rect x="1112.1" y="245" width="9.5" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="1115.12" y="255.5" ></text>
+</g>
+<g >
+<title>std::__uninitialized_fill_n&lt;true&gt;::__uninit_fill_n&lt;float*, unsigned long, float&gt; (1,001,001 samples, 0.20%; 0.00%)</title><rect x="1187.6" y="293" width="2.4" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1190.64" y="303.5" ></text>
+</g>
+<g >
+<title>std::iter_swap&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt; &gt; (6,006,006 samples, 1.20%; -0.40%)</title><rect x="911.5" y="197" width="14.2" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="914.52" y="207.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__ops::_Iter_less_iter::operator (2,002,002 samples, 0.40%; -0.20%)</title><rect x="512.7" y="53" width="4.7" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="515.68" y="63.5" ></text>
+</g>
+<g >
+<title>std::iter_swap&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt; &gt; (3,003,003 samples, 0.60%; -0.60%)</title><rect x="998.8" y="213" width="7.1" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="1001.84" y="223.5" ></text>
+</g>
+<g >
+<title>all (500,500,500 samples, 100%)</title><rect x="10.0" y="453" width="1180.0" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="13.00" y="463.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__ops::_Iter_less_iter::operator (1,001,001 samples, 0.20%; -1.40%)</title><rect x="538.6" y="69" width="2.4" height="15.0" fill="rgb(208,208,255)" rx="2" ry="2" />
+<text  x="541.64" y="79.5" ></text>
+</g>
+<g >
+<title>std::iter_swap&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt; &gt; (2,002,002 samples, 0.40%; -0.40%)</title><rect x="647.2" y="117" width="4.7" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="650.20" y="127.5" ></text>
+</g>
+<g >
+<title>std::__unguarded_partition&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (11,011,011 samples, 2.20%; -1.60%)</title><rect x="541.0" y="101" width="26.0" height="15.0" fill="rgb(208,208,255)" rx="2" ry="2" />
+<text  x="544.00" y="111.5" >s..</text>
+</g>
+<g >
+<title>do_user_addr_fault (1,001,001 samples, 0.20%; +0.20%)</title><rect x="1187.6" y="165" width="2.4" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="1190.64" y="175.5" ></text>
+</g>
+<g >
+<title>matmul (104,104,104 samples, 20.80%; -284.00%)</title><rect x="12.4" y="357" width="245.4" height="15.0" fill="rgb(0,0,255)" rx="2" ry="2" />
+<text  x="15.36" y="367.5" >matmul</text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator++ (1,001,001 samples, 0.20%; 0.00%)</title><rect x="548.1" y="85" width="2.3" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="551.08" y="95.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__ops::_Iter_less_iter::operator (4,004,004 samples, 0.80%; -5.40%)</title><rect x="902.1" y="197" width="9.4" height="15.0" fill="rgb(206,206,255)" rx="2" ry="2" />
+<text  x="905.08" y="207.5" ></text>
+</g>
+<g >
+<title>std::uninitialized_fill_n&lt;float*, unsigned long, float&gt; (1,001,001 samples, 0.20%; 0.00%)</title><rect x="1187.6" y="309" width="2.4" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1190.64" y="319.5" ></text>
+</g>
+<g >
+<title>std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (32,032,032 samples, 6.40%; +0.20%)</title><rect x="491.4" y="133" width="75.6" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="494.44" y="143.5" >std::__i..</text>
+</g>
+<g >
+<title>std::__move_median_to_first&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (1,001,001 samples, 0.20%; 0.00%)</title><rect x="651.9" y="149" width="2.4" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="654.92" y="159.5" ></text>
+</g>
+<g >
+<title>timer_expire_remote (1,001,001 samples, 0.20%; 0.00%)</title><rect x="356.9" y="245" width="2.4" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="359.92" y="255.5" ></text>
+</g>
+<g >
+<title>irq_exit_rcu (2,002,002 samples, 0.40%; 0.00%)</title><rect x="354.6" y="309" width="4.7" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="357.56" y="319.5" ></text>
+</g>
+<g >
+<title>_raw_spin_unlock_irq (1,001,001 samples, 0.20%; +0.20%)</title><rect x="356.9" y="229" width="2.4" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="359.92" y="239.5" ></text>
+</g>
+<g >
+<title>std::iter_swap&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt; &gt; (3,003,003 samples, 0.60%; -0.20%)</title><rect x="602.4" y="101" width="7.0" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="605.36" y="111.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator-- (4,004,004 samples, 0.80%; -0.20%)</title><rect x="529.2" y="69" width="9.4" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="532.20" y="79.5" ></text>
+</g>
+<g >
+<title>std::generate_canonical&lt;float, 24ul, std::mersenne_twister_engine&lt;unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul&gt; &gt; (11,011,011 samples, 2.20%; -6.00%)</title><rect x="262.5" y="293" width="26.0" height="15.0" fill="rgb(205,205,255)" rx="2" ry="2" />
+<text  x="265.52" y="303.5" >s..</text>
+</g>
+<g >
+<title>__gnu_cxx::operator-&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt; (1,001,001 samples, 0.20%; +0.20%)</title><rect x="486.7" y="181" width="2.4" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="489.72" y="191.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__ops::_Iter_less_iter::operator (1,001,001 samples, 0.20%; -0.40%)</title><rect x="500.9" y="37" width="2.3" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="503.88" y="47.5" ></text>
+</g>
+<g >
+<title>std::iter_swap&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt; &gt; (2,002,002 samples, 0.40%; 0.00%)</title><rect x="562.2" y="85" width="4.8" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="565.24" y="95.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__ops::_Iter_less_iter::operator (4,004,004 samples, 0.80%; -3.60%)</title><rect x="1147.5" y="261" width="9.5" height="15.0" fill="rgb(207,207,255)" rx="2" ry="2" />
+<text  x="1150.52" y="271.5" ></text>
+</g>
+<g >
+<title>std::iter_swap&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt; &gt; (1,001,001 samples, 0.20%; -0.40%)</title><rect x="517.4" y="53" width="2.4" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="520.40" y="63.5" ></text>
+</g>
+<g >
+<title>std::__unguarded_partition&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (17,017,017 samples, 3.40%; -2.60%)</title><rect x="1005.9" y="245" width="40.1" height="15.0" fill="rgb(208,208,255)" rx="2" ry="2" />
+<text  x="1008.92" y="255.5" >std..</text>
+</g>
+<g >
+<title>__gnu_cxx::operator-&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt; (1,001,001 samples, 0.20%; +0.20%)</title><rect x="503.2" y="69" width="2.4" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="506.24" y="79.5" ></text>
+</g>
+<g >
+<title>std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (2,002,002 samples, 0.40%; 0.00%)</title><rect x="493.8" y="69" width="4.7" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="496.80" y="79.5" ></text>
+</g>
+<g >
+<title>std::__unguarded_partition&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (22,022,022 samples, 4.40%; -4.40%)</title><rect x="654.3" y="149" width="51.9" height="15.0" fill="rgb(206,206,255)" rx="2" ry="2" />
+<text  x="657.28" y="159.5" >std::..</text>
+</g>
+<g >
+<title>std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (285,285,285 samples, 57.00%; 0.00%)</title><rect x="486.7" y="309" width="672.6" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="489.72" y="319.5" >std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator..</text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator-- (3,003,003 samples, 0.60%; -0.60%)</title><rect x="585.8" y="101" width="7.1" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="588.84" y="111.5" ></text>
+</g>
+<g >
+<title>std::mersenne_twister_engine&lt;unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul&gt;::_M_gen_rand (4,004,004 samples, 0.80%; -6.20%)</title><rect x="279.0" y="261" width="9.5" height="15.0" fill="rgb(205,205,255)" rx="2" ry="2" />
+<text  x="282.04" y="271.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator++ (2,002,002 samples, 0.40%; -1.00%)</title><rect x="1138.1" y="261" width="4.7" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="1141.08" y="271.5" ></text>
+</g>
+<g >
+<title>length (1,001,001 samples, 0.20%; +0.20%)</title><rect x="10.0" y="357" width="2.4" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="13.00" y="367.5" ></text>
+</g>
+<g >
+<title>std::__fill_a&lt;float*, float&gt; (1,001,001 samples, 0.20%; 0.00%)</title><rect x="1187.6" y="245" width="2.4" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1190.64" y="255.5" ></text>
+</g>
+<g >
+<title>std::swap&lt;float&gt; (2,002,002 samples, 0.40%; 0.00%)</title><rect x="805.3" y="149" width="4.7" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="808.32" y="159.5" ></text>
+</g>
+<g >
+<title>__alloc_frozen_pages_noprof (4,004,004 samples, 0.80%; 0.00%)</title><rect x="1178.2" y="53" width="9.4" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1181.20" y="63.5" ></text>
+</g>
+<g >
+<title>std::__fill_a1&lt;float*, float&gt; (1,001,001 samples, 0.20%; -0.40%)</title><rect x="1187.6" y="229" width="2.4" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="1190.64" y="239.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator-- (11,011,011 samples, 2.20%; 0.00%)</title><rect x="1076.7" y="245" width="26.0" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1079.72" y="255.5" >_..</text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator-- (9,009,009 samples, 1.80%; -0.60%)</title><rect x="880.8" y="197" width="21.3" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="883.84" y="207.5" >_..</text>
+</g>
+<g >
+<title>std::__unguarded_partition&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (8,008,008 samples, 1.60%; -1.20%)</title><rect x="522.1" y="85" width="18.9" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="525.12" y="95.5" ></text>
+</g>
+<g >
+<title>std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (114,114,114 samples, 22.80%; -0.20%)</title><rect x="486.7" y="197" width="269.1" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="489.72" y="207.5" >std::__introsort_loop&lt;__gnu_cxx::__n..</text>
+</g>
+<g >
+<title>__handle_mm_fault (8,008,008 samples, 1.60%; 0.00%)</title><rect x="1168.8" y="117" width="18.8" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1171.76" y="127.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator-- (3,003,003 samples, 0.60%; -1.00%)</title><rect x="635.4" y="117" width="7.1" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="638.40" y="127.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator-- (9,009,009 samples, 1.80%; -0.40%)</title><rect x="668.4" y="133" width="21.3" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="671.44" y="143.5" >_..</text>
+</g>
+<g >
+<title>tmigr_handle_remote (1,001,001 samples, 0.20%; 0.00%)</title><rect x="356.9" y="261" width="2.4" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="359.92" y="271.5" ></text>
+</g>
+<g >
+<title>std::__sort&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (324,324,324 samples, 64.80%; 0.00%)</title><rect x="394.7" y="325" width="764.6" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="397.68" y="335.5" >std::__sort&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx:..</text>
+</g>
+<g >
+<title>std::swap&lt;float&gt; (6,006,006 samples, 1.20%; +1.20%)</title><rect x="911.5" y="181" width="14.2" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="914.52" y="191.5" ></text>
+</g>
+<g >
+<title>std::__unguarded_partition&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (34,034,034 samples, 6.80%; -2.00%)</title><rect x="925.7" y="229" width="80.2" height="15.0" fill="rgb(208,208,255)" rx="2" ry="2" />
+<text  x="928.68" y="239.5" >std::__un..</text>
+</g>
+<g >
+<title>std::vector&lt;float, std::allocator&lt;float&gt; &gt;::vector (13,013,013 samples, 2.60%; 0.00%)</title><rect x="1159.3" y="357" width="30.7" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1162.32" y="367.5" >st..</text>
+</g>
+<g >
+<title>std::__unguarded_partition_pivot&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (23,023,023 samples, 4.60%; 0.00%)</title><rect x="755.8" y="197" width="54.2" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="758.76" y="207.5" >std::..</text>
+</g>
+<g >
+<title>__gnu_cxx::__ops::_Iter_less_iter::operator (4,004,004 samples, 0.80%; -1.60%)</title><rect x="592.9" y="101" width="9.5" height="15.0" fill="rgb(208,208,255)" rx="2" ry="2" />
+<text  x="595.92" y="111.5" ></text>
+</g>
+<g >
+<title>std::__unguarded_partition_pivot&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (18,018,018 samples, 3.60%; 0.00%)</title><rect x="567.0" y="133" width="42.4" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="569.96" y="143.5" >std:..</text>
+</g>
+<g >
+<title>std::fill_n&lt;float*, unsigned long, float&gt; (1,001,001 samples, 0.20%; 0.00%)</title><rect x="1187.6" y="277" width="2.4" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1190.64" y="287.5" ></text>
+</g>
+<g >
+<title>std::__fill_a1&lt;float*, float&gt; (12,012,012 samples, 2.40%; 0.00%)</title><rect x="1159.3" y="213" width="28.3" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1162.32" y="223.5" >s..</text>
+</g>
+<g >
+<title>std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (11,011,011 samples, 2.20%; -0.20%)</title><rect x="493.8" y="101" width="26.0" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="496.80" y="111.5" >s..</text>
+</g>
+<g >
+<title>std::__fill_a&lt;float*, float&gt; (12,012,012 samples, 2.40%; 0.00%)</title><rect x="1159.3" y="229" width="28.3" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1162.32" y="239.5" >s..</text>
+</g>
+<g >
+<title>std::vector&lt;float, std::allocator&lt;float&gt; &gt;::operator[] (2,002,002 samples, 0.40%; -203.00%)</title><rect x="253.1" y="341" width="4.7" height="15.0" fill="rgb(59,59,255)" rx="2" ry="2" />
+<text  x="256.08" y="351.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator-- (7,007,007 samples, 1.40%; +0.20%)</title><rect x="725.1" y="149" width="16.5" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="728.08" y="159.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator++ (3,003,003 samples, 0.60%; +0.20%)</title><rect x="578.8" y="101" width="7.0" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="581.76" y="111.5" ></text>
+</g>
+<g >
+<title>asm_exc_page_fault (12,012,012 samples, 2.40%; 0.00%)</title><rect x="1159.3" y="181" width="28.3" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1162.32" y="191.5" >a..</text>
+</g>
+<g >
+<title>memcg1_commit_charge (1,001,001 samples, 0.20%; +0.20%)</title><rect x="1171.1" y="53" width="2.4" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="1174.12" y="63.5" ></text>
+</g>
+<g >
+<title>std::swap&lt;float&gt; (4,004,004 samples, 0.80%; +0.60%)</title><rect x="1112.1" y="229" width="9.5" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="1115.12" y="239.5" ></text>
+</g>
+<g >
+<title>std::__unguarded_partition_pivot&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (32,032,032 samples, 6.40%; 0.00%)</title><rect x="1046.0" y="277" width="75.6" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1049.04" y="287.5" >std::__u..</text>
+</g>
+<g >
+<title>std::__final_insertion_sort&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (39,039,039 samples, 7.80%; 0.00%)</title><rect x="394.7" y="309" width="92.0" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="397.68" y="319.5" >std::__fin..</text>
+</g>
+<g >
+<title>std::swap&lt;float&gt; (3,003,003 samples, 0.60%; +0.60%)</title><rect x="748.7" y="133" width="7.1" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="751.68" y="143.5" ></text>
+</g>
+<g >
+<title>run_timer_softirq (2,002,002 samples, 0.40%; 0.00%)</title><rect x="354.6" y="277" width="4.7" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="357.56" y="287.5" ></text>
+</g>
+<g >
+<title>handle_softirqs (2,002,002 samples, 0.40%; 0.00%)</title><rect x="354.6" y="293" width="4.7" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="357.56" y="303.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator++ (1,001,001 samples, 0.20%; -0.80%)</title><rect x="633.0" y="117" width="2.4" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="636.04" y="127.5" ></text>
+</g>
+<g >
+<title>std::uniform_real_distribution&lt;float&gt;::operator (11,011,011 samples, 2.20%; -1.40%)</title><rect x="262.5" y="341" width="26.0" height="15.0" fill="rgb(208,208,255)" rx="2" ry="2" />
+<text  x="265.52" y="351.5" >s..</text>
+</g>
+<g >
+<title>std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (157,157,157 samples, 31.40%; 0.00%)</title><rect x="486.7" y="229" width="370.5" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="489.72" y="239.5" >std::__introsort_loop&lt;__gnu_cxx::__normal_iterator..</text>
+</g>
+<g >
+<title>__gnu_cxx::__ops::_Iter_less_iter::operator (3,003,003 samples, 0.60%; -6.20%)</title><rect x="741.6" y="149" width="7.1" height="15.0" fill="rgb(205,205,255)" rx="2" ry="2" />
+<text  x="744.60" y="159.5" ></text>
+</g>
+<g >
+<title>std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (92,092,092 samples, 18.40%; -0.40%)</title><rect x="489.1" y="181" width="217.1" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="492.08" y="191.5" >std::__introsort_loop&lt;__gnu_..</text>
+</g>
+<g >
+<title>std::__unguarded_partition_pivot&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (7,007,007 samples, 1.40%; 0.00%)</title><rect x="503.2" y="85" width="16.6" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="506.24" y="95.5" ></text>
+</g>
+<g >
+<title>std::__unguarded_partition&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (29,029,029 samples, 5.80%; -1.80%)</title><rect x="857.2" y="213" width="68.5" height="15.0" fill="rgb(208,208,255)" rx="2" ry="2" />
+<text  x="860.24" y="223.5" >std::__..</text>
+</g>
+<g >
+<title>__gnu_cxx::__ops::_Iter_less_iter::operator (6,006,006 samples, 1.20%; -2.20%)</title><rect x="689.7" y="133" width="14.1" height="15.0" fill="rgb(208,208,255)" rx="2" ry="2" />
+<text  x="692.68" y="143.5" ></text>
+</g>
+<g >
+<title>std::__unguarded_partition_pivot&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (34,034,034 samples, 6.80%; 0.00%)</title><rect x="925.7" y="245" width="80.2" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="928.68" y="255.5" >std::__un..</text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator++ (1,001,001 samples, 0.20%; 0.00%)</title><rect x="526.8" y="69" width="2.4" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="529.84" y="79.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__ops::_Iter_less_iter::operator (4,004,004 samples, 0.80%; -7.40%)</title><rect x="1102.7" y="245" width="9.4" height="15.0" fill="rgb(204,204,255)" rx="2" ry="2" />
+<text  x="1105.68" y="255.5" ></text>
+</g>
+<g >
+<title>std::vector&lt;float, std::allocator&lt;float&gt; &gt;::_M_fill_initialize (1,001,001 samples, 0.20%; 0.00%)</title><rect x="1187.6" y="341" width="2.4" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1190.64" y="351.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator-- (3,003,003 samples, 0.60%; -0.20%)</title><rect x="550.4" y="85" width="7.1" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="553.44" y="95.5" ></text>
+</g>
+<g >
+<title>std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (237,237,237 samples, 47.40%; 0.00%)</title><rect x="486.7" y="277" width="559.3" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="489.72" y="287.5" >std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float..</text>
+</g>
+<g >
+<title>std::__unguarded_partition&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (18,018,018 samples, 3.60%; -0.60%)</title><rect x="567.0" y="117" width="42.4" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="569.96" y="127.5" >std:..</text>
+</g>
+<g >
+<title>std::mersenne_twister_engine&lt;unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul&gt;::operator (4,004,004 samples, 0.80%; -1.60%)</title><rect x="279.0" y="277" width="9.5" height="15.0" fill="rgb(208,208,255)" rx="2" ry="2" />
+<text  x="282.04" y="287.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator-- (1,001,001 samples, 0.20%; -0.40%)</title><rect x="510.3" y="53" width="2.4" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="513.32" y="63.5" ></text>
+</g>
+<g >
+<title>std::__unguarded_linear_insert&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Val_less_iter&gt; (25,025,025 samples, 5.00%; -6.20%)</title><rect x="427.7" y="277" width="59.0" height="15.0" fill="rgb(205,205,255)" rx="2" ry="2" />
+<text  x="430.72" y="287.5" >std::_..</text>
+</g>
+<g >
+<title>std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (186,186,186 samples, 37.20%; 0.00%)</title><rect x="486.7" y="245" width="439.0" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="489.72" y="255.5" >std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;float*, s..</text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator++ (4,004,004 samples, 0.80%; -0.80%)</title><rect x="946.9" y="213" width="9.5" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="949.92" y="223.5" ></text>
+</g>
+<g >
+<title>std::__unguarded_partition_pivot&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (16,016,016 samples, 3.20%; 0.00%)</title><rect x="1121.6" y="293" width="37.7" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1124.56" y="303.5" >std..</text>
+</g>
+<g >
+<title>std::swap&lt;float&gt; (2,002,002 samples, 0.40%; -0.40%)</title><rect x="1041.3" y="213" width="4.7" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="1044.32" y="223.5" ></text>
+</g>
+<g >
+<title>__mem_cgroup_charge (1,001,001 samples, 0.20%; 0.00%)</title><rect x="1171.1" y="85" width="2.4" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1174.12" y="95.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator-- (1,001,001 samples, 0.20%; -0.40%)</title><rect x="1034.2" y="229" width="2.4" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="1037.24" y="239.5" ></text>
+</g>
+<g >
+<title>std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (69,069,069 samples, 13.80%; 0.00%)</title><rect x="489.1" y="165" width="162.8" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="492.08" y="175.5" >std::__introsort_loo..</text>
+</g>
+<g >
+<title>std::__unguarded_partition&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (2,002,002 samples, 0.40%; +0.40%)</title><rect x="493.8" y="37" width="4.7" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="496.80" y="47.5" ></text>
+</g>
+<g >
+<title>std::uniform_real_distribution&lt;float&gt;::operator (11,011,011 samples, 2.20%; -4.40%)</title><rect x="262.5" y="325" width="26.0" height="15.0" fill="rgb(206,206,255)" rx="2" ry="2" />
+<text  x="265.52" y="335.5" >s..</text>
+</g>
+<g >
+<title>std::__unguarded_partition&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (21,021,021 samples, 4.20%; -2.80%)</title><rect x="706.2" y="165" width="49.6" height="15.0" fill="rgb(207,207,255)" rx="2" ry="2" />
+<text  x="709.20" y="175.5" >std::..</text>
+</g>
+<g >
+<title>std::__unguarded_partition&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (18,018,018 samples, 3.60%; -0.60%)</title><rect x="609.4" y="133" width="42.5" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="612.44" y="143.5" >std:..</text>
+</g>
+<g >
+<title>sort_values (324,324,324 samples, 64.80%; 0.00%)</title><rect x="394.7" y="357" width="764.6" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="397.68" y="367.5" >sort_values</text>
+</g>
+<g >
+<title>asm_exc_page_fault (1,001,001 samples, 0.20%; 0.00%)</title><rect x="1187.6" y="197" width="2.4" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1190.64" y="207.5" ></text>
+</g>
+<g >
+<title>std::iter_swap&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt; &gt; (1,001,001 samples, 0.20%; 0.00%)</title><rect x="703.8" y="133" width="2.4" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="706.84" y="143.5" ></text>
+</g>
+<g >
+<title>folio_batch_move_lru (2,002,002 samples, 0.40%; 0.00%)</title><rect x="1173.5" y="53" width="4.7" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1176.48" y="63.5" ></text>
+</g>
+<g >
+<title>std::__uninitialized_default_n_1&lt;true&gt;::__uninit_default_n&lt;float*, unsigned long&gt; (12,012,012 samples, 2.40%; 0.00%)</title><rect x="1159.3" y="293" width="28.3" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1162.32" y="303.5" >s..</text>
+</g>
+<g >
+<title>std::__introsort_loop&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, long, __gnu_cxx::__ops::_Iter_less_iter&gt; (51,051,051 samples, 10.20%; 0.00%)</title><rect x="489.1" y="149" width="120.3" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="492.08" y="159.5" >std::__introso..</text>
+</g>
+<g >
+<title>std::__detail::_Adaptor&lt;std::mersenne_twister_engine&lt;unsigned long, 32ul, 624ul, 397ul, 31ul, 2567483615ul, 11ul, 4294967295ul, 7ul, 2636928640ul, 15ul, 4022730752ul, 18ul, 1812433253ul&gt;, float&gt;::operator (11,011,011 samples, 2.20%; -0.60%)</title><rect x="262.5" y="309" width="26.0" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="265.52" y="319.5" >s..</text>
+</g>
+<g >
+<title>std::__uninitialized_default_n_a&lt;float*, unsigned long, float&gt; (12,012,012 samples, 2.40%; 0.00%)</title><rect x="1159.3" y="325" width="28.3" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1162.32" y="335.5" >s..</text>
+</g>
+<g >
+<title>__gnu_cxx::__ops::_Iter_less_iter::operator (6,006,006 samples, 1.20%; -6.60%)</title><rect x="984.7" y="213" width="14.1" height="15.0" fill="rgb(205,205,255)" rx="2" ry="2" />
+<text  x="987.68" y="223.5" ></text>
+</g>
+<g >
+<title>std::__move_median_to_first&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (1,001,001 samples, 0.20%; +0.20%)</title><rect x="519.8" y="85" width="2.3" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="522.76" y="95.5" ></text>
+</g>
+<g >
+<title>std::iter_swap&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt; &gt; (5,005,005 samples, 1.00%; -0.40%)</title><rect x="845.4" y="181" width="11.8" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="848.44" y="191.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator++ (2,002,002 samples, 0.40%; -0.60%)</title><rect x="876.1" y="197" width="4.7" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="879.12" y="207.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__ops::_Iter_less_iter::operator (6,006,006 samples, 1.20%; -4.20%)</title><rect x="791.2" y="165" width="14.1" height="15.0" fill="rgb(206,206,255)" rx="2" ry="2" />
+<text  x="794.16" y="175.5" ></text>
+</g>
+<g >
+<title>std::iter_swap&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt; &gt; (2,002,002 samples, 0.40%; -0.60%)</title><rect x="1041.3" y="229" width="4.7" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="1044.32" y="239.5" ></text>
+</g>
+<g >
+<title>main (500,500,500 samples, 100.00%; 0.00%)</title><rect x="10.0" y="373" width="1180.0" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="13.00" y="383.5" >main</text>
+</g>
+<g >
+<title>std::__fill_n_a&lt;float*, unsigned long, float&gt; (1,001,001 samples, 0.20%; 0.00%)</title><rect x="1187.6" y="261" width="2.4" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1190.64" y="271.5" ></text>
+</g>
+<g >
+<title>std::__unguarded_partition_pivot&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (18,018,018 samples, 3.60%; 0.00%)</title><rect x="609.4" y="149" width="42.5" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="612.44" y="159.5" >std:..</text>
+</g>
+<g >
+<title>std::iter_swap&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt; &gt; (2,002,002 samples, 0.40%; 0.00%)</title><rect x="805.3" y="165" width="4.7" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="808.32" y="175.5" ></text>
+</g>
+<g >
+<title>std::swap&lt;float&gt; (1,001,001 samples, 0.20%; -0.20%)</title><rect x="703.8" y="117" width="2.4" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="706.84" y="127.5" ></text>
+</g>
+<g >
+<title>std::swap&lt;float&gt; (1,001,001 samples, 0.20%; +0.20%)</title><rect x="517.4" y="37" width="2.4" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="520.40" y="47.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,001,001 samples, 0.20%; 0.00%)</title><rect x="1187.6" y="213" width="2.4" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1190.64" y="223.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator++ (3,003,003 samples, 0.60%; -1.00%)</title><rect x="828.9" y="181" width="7.1" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="831.92" y="191.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator-- (1,001,001 samples, 0.20%; -2.00%)</title><rect x="836.0" y="181" width="2.4" height="15.0" fill="rgb(208,208,255)" rx="2" ry="2" />
+<text  x="839.00" y="191.5" ></text>
+</g>
+<g >
+<title>_raw_spin_unlock_irq (1,001,001 samples, 0.20%; +0.20%)</title><rect x="354.6" y="245" width="2.3" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="357.56" y="255.5" ></text>
+</g>
+<g >
+<title>exc_page_fault (12,012,012 samples, 2.40%; 0.00%)</title><rect x="1159.3" y="165" width="28.3" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1162.32" y="175.5" >e..</text>
+</g>
+<g >
+<title>clear_page_erms (4,004,004 samples, 0.80%; +0.80%)</title><rect x="1178.2" y="37" width="9.4" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="1181.20" y="47.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__ops::_Val_less_iter::operator (5,005,005 samples, 1.00%; -8.20%)</title><rect x="474.9" y="261" width="11.8" height="15.0" fill="rgb(203,203,255)" rx="2" ry="2" />
+<text  x="477.92" y="271.5" ></text>
+</g>
+<g >
+<title>std::__unguarded_partition&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (5,005,005 samples, 1.00%; -0.60%)</title><rect x="508.0" y="69" width="11.8" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="510.96" y="79.5" ></text>
+</g>
+<g >
+<title>std::__unguarded_partition&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (16,016,016 samples, 3.20%; -0.80%)</title><rect x="1121.6" y="277" width="37.7" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="1124.56" y="287.5" >std..</text>
+</g>
+<g >
+<title>std::__unguarded_partition_pivot&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (29,029,029 samples, 5.80%; 0.00%)</title><rect x="857.2" y="229" width="68.5" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="860.24" y="239.5" >std::__..</text>
+</g>
+<g >
+<title>saxpy (45,045,045 samples, 9.00%; -65.60%)</title><rect x="288.5" y="357" width="106.2" height="15.0" fill="rgb(161,161,255)" rx="2" ry="2" />
+<text  x="291.48" y="367.5" >saxpy</text>
+</g>
+<g >
+<title>do_anonymous_page (8,008,008 samples, 1.60%; 0.00%)</title><rect x="1168.8" y="101" width="18.8" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1171.76" y="111.5" ></text>
+</g>
+<g >
+<title>__run_timers (1,001,001 samples, 0.20%; 0.00%)</title><rect x="354.6" y="261" width="2.3" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="357.56" y="271.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator++ (9,009,009 samples, 1.80%; +1.20%)</title><rect x="406.5" y="277" width="21.2" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="409.48" y="287.5" >_..</text>
+</g>
+<g >
+<title>__gnu_cxx::__ops::_Iter_less_iter::operator (3,003,003 samples, 0.60%; -3.00%)</title><rect x="838.4" y="181" width="7.0" height="15.0" fill="rgb(207,207,255)" rx="2" ry="2" />
+<text  x="841.36" y="191.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__ops::_Iter_less_iter::operator (2,002,002 samples, 0.40%; -2.80%)</title><rect x="1036.6" y="229" width="4.7" height="15.0" fill="rgb(207,207,255)" rx="2" ry="2" />
+<text  x="1039.60" y="239.5" ></text>
+</g>
+<g >
+<title>do_user_addr_fault (12,012,012 samples, 2.40%; +0.80%)</title><rect x="1159.3" y="149" width="28.3" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="1162.32" y="159.5" >d..</text>
+</g>
+<g >
+<title>std::swap&lt;float&gt; (2,002,002 samples, 0.40%; +0.40%)</title><rect x="562.2" y="69" width="4.8" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="565.24" y="79.5" ></text>
+</g>
+<g >
+<title>handle_mm_fault (8,008,008 samples, 1.60%; 0.00%)</title><rect x="1168.8" y="133" width="18.8" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1171.76" y="143.5" ></text>
+</g>
+<g >
+<title>exc_page_fault (1,001,001 samples, 0.20%; 0.00%)</title><rect x="1187.6" y="181" width="2.4" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1190.64" y="191.5" ></text>
+</g>
+<g >
+<title>__folio_throttle_swaprate (1,001,001 samples, 0.20%; +0.20%)</title><rect x="1168.8" y="85" width="2.3" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="1171.76" y="95.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator-- (5,005,005 samples, 1.00%; -1.40%)</title><rect x="779.4" y="165" width="11.8" height="15.0" fill="rgb(208,208,255)" rx="2" ry="2" />
+<text  x="782.36" y="175.5" ></text>
+</g>
+<g >
+<title>std::__unguarded_partition_pivot&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (20,020,020 samples, 4.00%; 0.00%)</title><rect x="810.0" y="213" width="47.2" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="813.04" y="223.5" >std:..</text>
+</g>
+<g >
+<title>std::__unguarded_partition_pivot&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (2,002,002 samples, 0.40%; 0.00%)</title><rect x="493.8" y="53" width="4.7" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="496.80" y="63.5" ></text>
+</g>
+<g >
+<title>std::swap&lt;float&gt; (2,002,002 samples, 0.40%; +0.40%)</title><rect x="647.2" y="101" width="4.7" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="650.20" y="111.5" ></text>
+</g>
+<g >
+<title>__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;::operator-- (2,002,002 samples, 0.40%; -1.00%)</title><rect x="470.2" y="261" width="4.7" height="15.0" fill="rgb(209,209,255)" rx="2" ry="2" />
+<text  x="473.20" y="271.5" ></text>
+</g>
+<g >
+<title>std::__uninitialized_default_n&lt;float*, unsigned long&gt; (12,012,012 samples, 2.40%; 0.00%)</title><rect x="1159.3" y="309" width="28.3" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1162.32" y="319.5" >s..</text>
+</g>
+<g >
+<title>std::__uninitialized_fill_n_a&lt;float*, unsigned long, float, float&gt; (1,001,001 samples, 0.20%; 0.00%)</title><rect x="1187.6" y="325" width="2.4" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1190.64" y="335.5" ></text>
+</g>
+<g >
+<title>std::__unguarded_partition_pivot&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__ops::_Iter_less_iter&gt; (17,017,017 samples, 3.40%; 0.00%)</title><rect x="1005.9" y="261" width="40.1" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1008.92" y="271.5" >std..</text>
+</g>
+<g >
+<title>_raw_spin_unlock_irqrestore (2,002,002 samples, 0.40%; +0.40%)</title><rect x="1173.5" y="37" width="4.7" height="15.0" fill="rgb(255,209,209)" rx="2" ry="2" />
+<text  x="1176.48" y="47.5" ></text>
+</g>
+<g >
+<title>std::iter_swap&lt;__gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt;, __gnu_cxx::__normal_iterator&lt;float*, std::vector&lt;float, std::allocator&lt;float&gt; &gt; &gt; &gt; (1,001,001 samples, 0.20%; 0.00%)</title><rect x="1157.0" y="261" width="2.3" height="15.0" fill="rgb(255,255,255)" rx="2" ry="2" />
+<text  x="1159.96" y="271.5" ></text>
+</g>
+</g>
+</svg>
